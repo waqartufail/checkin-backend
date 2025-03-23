@@ -2,6 +2,9 @@ const express = require("express");
 const cors = require("cors");
 const dotenv = require("dotenv");
 const sqlite3 = require("sqlite3").verbose();
+const http = require("http");
+const { Server } = require("socket.io");
+const checkRoutes = require("./routes/checkRoutes");
 
 // ✅ Load environment variables
 dotenv.config();
@@ -15,6 +18,12 @@ if (!process.env.JWT_SECRET) {
 const app = express();
 app.use(cors());
 app.use(express.json());
+const server = http.createServer(app); // Use HTTP Server
+const io = new Server(server, {
+    cors: { origin: "*",methods: ["GET", "POST"],credentials: true, } // Allow all frontend origins
+});
+// ✅ Pass `io` to `checkRoutes`
+app.use("/api", checkRoutes(io));
 
 // ✅ Database setup
 const db = new sqlite3.Database("./checkin.db", sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE, (err) => {
@@ -23,6 +32,24 @@ const db = new sqlite3.Database("./checkin.db", sqlite3.OPEN_READWRITE | sqlite3
         process.exit(1);
     }
     console.log("✅ Connected to SQLite database.");
+});
+
+// ✅ Store connected admin sockets
+let adminSockets = [];
+
+// ✅ WebSocket Connection
+io.on("connection", (socket) => {
+    console.log("🟢 New client connected:", socket.id);
+
+    socket.on("registerAdmin", () => {
+        adminSockets.push(socket);
+        console.log("✅ Admin registered for notifications.");
+    });
+
+    socket.on("disconnect", () => {
+        adminSockets = adminSockets.filter((s) => s.id !== socket.id);
+        console.log("🔴 Client disconnected:", socket.id);
+    });
 });
 
 // ✅ Create Tables if they don’t exist
@@ -53,11 +80,10 @@ db.serialize(() => {
 
 // ✅ Import Routes
 const authRoutes = require("./routes/authRoutes");  // Authentication routes
-const checkRoutes = require("./routes/checkRoutes"); // Check-In/Out routes
 
 // ✅ Register Routes
 app.use("/auth", authRoutes);   // All auth-related routes
-app.use("/check", checkRoutes); // All check-in/check-out related routes
+app.use("/check", checkRoutes(io)); // All check-in/check-out related routes
 
 // ✅ Test Route
 app.get("/", (req, res) => res.send("✅ API Running"));
