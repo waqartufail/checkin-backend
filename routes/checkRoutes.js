@@ -13,7 +13,15 @@ module.exports = (io) => {
 router.post("/checkin", (req, res) => {
   console.log("➡️ Check-in API hit at:", new Date().toISOString());
   console.log("📥 Received payload:", req.body);
-  const checkinTime = new Date().toISOString(); // Current timestamp
+  function getESTTime() {
+    const now = new Date().toLocaleString("en-US", { timeZone: "America/New_York", hour12: false });
+    const match = now.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4}), (\d{2}):(\d{2}):(\d{2})/);
+    if (!match) return null; // Handle error case
+    const [, month, day, year, hours, minutes, seconds] = match;
+    return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")} ${hours}:${minutes}:${seconds}`;
+}
+
+  const checkinTime = getESTTime(); // Get formatted EST time
   const { user_id } = req.body;
   if (!user_id) {
       console.warn("⚠️ Missing user ID");
@@ -65,27 +73,45 @@ router.post("/checkin", (req, res) => {
 
 // ✅ Check-Out API
 router.post("/checkout", (req, res) => {
-  const { user_id } = req.body; // Changed from userId to user_id
+  const { user_id } = req.body; // Ensure user_id is received correctly
 
   if (!user_id) {
     return res.status(400).json({ error: "User ID is required" });
   }
 
-  const checkoutQuery = `INSERT INTO checkin_out (user_id, action) VALUES (?, 'checkout')`;
+  function getESTTime() {
+    const now = new Date().toLocaleString("en-US", { timeZone: "America/New_York", hour12: false });
+    const match = now.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4}), (\d{2}):(\d{2}):(\d{2})/);
+    if (!match) return null; // Handle error case
+    const [, month, day, year, hours, minutes, seconds] = match;
+    return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")} ${hours}:${minutes}:${seconds}`;
+}
 
-  db.run(checkoutQuery, [user_id], function (err) {
-    if (err) {
-      console.error("Check-out error:", err);
-      return res.status(500).json({ error: "Check-out failed" });
-    }
+  const checkoutTime = getESTTime(); // Get formatted EST time
 
-    // ✅ Update `isCheckedIn` status
+  // Start transaction to ensure atomic updates
+  db.serialize(() => {
+    // ✅ Update `isCheckedIn` status in `users` table
     db.run(`UPDATE users SET isCheckedIn = 0 WHERE id = ?`, [user_id], (updateErr) => {
       if (updateErr) {
+        console.error("❌ Error updating user status:", updateErr);
         return res.status(500).json({ error: "Failed to update user status", details: updateErr.message });
       }
 
-      res.json({ message: "Check-out successful", checkout_id: this.lastID });
+      // ✅ Insert check-out record into `checkin_out` table
+      db.run(
+        "INSERT INTO checkin_out (user_id, action, timestamp) VALUES (?, 'checkout', ?)", 
+        [user_id, checkoutTime],
+        function (insertErr) {
+          if (insertErr) {
+            console.error("❌ Error inserting check-out record:", insertErr);
+            return res.status(500).json({ error: "Check-Out failed", details: insertErr.message });
+          }
+
+          // ✅ Success Response
+          res.json({ message: "Check-out successful", checkout_id: this.lastID });
+        }
+      );
     });
   });
 });
